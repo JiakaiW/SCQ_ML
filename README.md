@@ -1,9 +1,17 @@
 <!---
 README.md, the decription of the whole project
 -->
-![https://www.youtube.com/watch?v=8owQBFAHw7E](gnn0.png)https://www.youtube.com/watch?v=8owQBFAHw7E
-![https://www.youtube.com/watch?v=8owQBFAHw7E](gnn1.png)
-![https://www.youtube.com/watch?v=8owQBFAHw7E](gnn2.png)
+<div style="width: 100%; margin: 0 auto;">
+    <div style="text-align: center;">
+        <img src="gnn0.png" alt="GNN Video" width="60%">
+        <img src="gnn1.png" alt="GNN Image 1" width="60%">
+        <img src="gnn2.png" alt="GNN Image 2" width="60%">
+        <br><a href="https://www.youtube.com/watch?v=8owQBFAHw7E">https://www.youtube.com/watch?v=8owQBFAHw7E</a>
+        <br>
+    </div>
+    
+</div>
+
 # GNN
 ### Concepts:
 1. GNN

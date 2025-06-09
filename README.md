@@ -1,27 +1,26 @@
 <!---
 README.md, the decription of the whole project
 -->
-<div style="width: 100%; margin: 0 auto;">
-    <div style="text-align: center;">
-        <img src="gnn0.png" alt="GNN Video" width="60%">
-        <img src="gnn1.png" alt="GNN Image 1" width="60%">
-        <img src="gnn2.png" alt="GNN Image 2" width="60%">
-        <br><a href="https://www.youtube.com/watch?v=8owQBFAHw7E">https://www.youtube.com/watch?v=8owQBFAHw7E</a>
-        <br>
-    </div>
-    
-</div>
 
-# GNN
-### Concepts:
-1. GNN
-2. GAT
-3. Relational Graph convolution
+
 The purpose is to use ML to understand and predict properties of complex superconducting circuits, with the hope that the resulting ML model can help discover more performant superconducting qubits or more interesting superconducting qubits. Some interesting properties are: 
 1. Selection rule as in natrual qubits. Fluxonium has some pseudo-selection rule that originates from its wavefunction overlaps. It would be interesting to see if there are superconducting qubits that exhibit natural-atom like selection rules that enable optical pumping and other interesting protocols.
 2. Multiple long-lived subspaces. the "omg" (optical, metastable, ground) structure of natural atoms like $^{171}Yb$ enables interesting gate protocols in trapped ion qubits. It would be interesting to see if we can create something like that with superconducting qubits.
 
-# First, review the pipeline of analyzing a single superconducting circuit
+
+# Two facets of the holy grail:
+## 1. How to automatically evaluate the performance of a complex superconducting qubit?
+## 2. How to generate good superconducting qubits?
+
+# Literature review
+### Graph Neural Networks-based Parameter Design towards Large-Scale Superconducting Quantum Circuits for Crosstalk Mitigation (Nov 2024) 
+It's about freuqency allocation of a processor, not about qubits.
+
+### SQuADDS: A validated design database and simulation workflow for superconducting qubit design
+It's about physical realization of qubits, like length of inductance, so not relevanbt
+
+
+# Pipeline of analyzing a single superconducting circuit
 1. Circuit decription as a graph
    ```Python
     zero_pi = scq.Circuit("""# zero-pi
@@ -81,14 +80,9 @@ The purpose is to use ML to understand and predict properties of complex superco
    '''
    ```
 
-# Literature review
-### Graph Neural Networks-based Parameter Design towards Large-Scale Superconducting Quantum Circuits for Crosstalk Mitigation (Nov 2024) 
-It's about freuqency allocation of a processor, not about qubits.
 
-### SQuADDS: A validated design database and simulation workflow for superconducting qubit design
-It's about physical realization of qubits, like length of inductance, so not relevanbt
 
-# Architecture selection
+# Specific NN architecture choice
 ### Graph Transformer
 ### Physics-informed NN
 ### Message-Passing GNN (e.g. MPNN, GatedGCN)
@@ -108,9 +102,7 @@ It's about physical realization of qubits, like length of inductance, so not rel
 1. Implement a way to describe the circuits, and use it to bridge ML model to the qubit properties like matrix element, eigenenergies.
 2. Choose a model architecture
    1. Review of relavent projects:
-      1. AlphaFold, AlphaChip, 
-      2. Graph neural network
    2. Pick one
-3. Train ML model
+3. Train ML model on small dataset (3-node circuits)
 4. Evaluate ML model
 5. Test the ML model

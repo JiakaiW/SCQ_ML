@@ -1,140 +1,174 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# Generate a supervised dataset for GNN-based property prediction of
-# two-node superconducting circuits           (c) 2025  - MIT   Licence
-# ──────────────────────────────────────────────────────────────────────────────
-import itertools, random, json, math, pathlib, multiprocessing as mp
-
+# make_dataset.py  ────────────────────────────────────────────────────────────
+import itertools, random, pathlib, multiprocessing as mp, argparse
+import shutil
+from uuid import uuid4
+import math
 import numpy as np
 import torch
 from torch_geometric.data import Data, InMemoryDataset
-import scqubits as scq               # ≥1.4.0
+import scqubits as scq
+from tqdm import tqdm
 
-# ----------------------------- hyper-parameters ------------------------------ #
-NUM_SAMPLES_PER_TOPOLOGY = 400       # → total 7×400 = 2800 graphs
-N_JOBS                = 1  # parallel scqubits runs
-RNG_SEED              = 42
-torch.manual_seed(RNG_SEED);  random.seed(RNG_SEED);  np.random.seed(RNG_SEED)
+from utils import write_chunk
 
-# Component ranges  (GHz units for EJ, EC, EL → SC-Qubits default)
-RANGES = dict(
-    EJ=(  5.0,  30.0),   # Josephson energy
-    EC=(0.05,   3.0),    # Capacitive energy  (E_C = e²/2C; pick broad span)
-    EL=(0.01,   1.0),    # Inductive energy   (E_L = Φ₀²/2L)
-)
+# --------------------------- PyTorch Multiprocessing -------------------------
+torch.multiprocessing.set_sharing_strategy('file_system')
 
+# --------------------------- global settings ---------------------------------
+RNG_SEED = 42
+# This will now be set by the command-line argument
+# NUM_SAMPLES_PER_TOPOLOGY = 10000 
+COMP_RANGES = dict( EJ=(  1.0, 10.0),
+                    EC=(0.01,  10.0),
+                    EL=(0.01,  10.0) )
 ONE_HOT = dict(J=[1,0,0], C=[0,1,0], L=[0,0,1])
 
-# ---------------------------------------------------------------------------- #
-def sample_component(comp_type: str) -> float:
-    low, high = RANGES[f'E{comp_type}']
-    return random.uniform(low, high)
-
-def build_scqubits_circuit(topology: str, params: dict) -> scq.Circuit:
+# ─────────────────────────── your helper ────────────────────────────────────
+def get_yaml_for_one_circuit_edge(i: int, j: int,
+                                  EJ: float = 0, EC: float = 0, EL: float = 0):
     """
-    topology = string like 'JL' etc.
-    params   = dict {'J0':val, 'L0':val, 'L1':val, ...}
+    Returns *list* of YAML lines (one per branch).
     """
     branch_lines = []
-    # All elements connect node 1 ↔ 2 (SC-Qubits counts from 1)
-    for k, comp in enumerate(topology):
-        par_val = params[f'{comp}{k}']
-        if   comp == 'J':
-            branch_lines.append(f"- [JJ, 1,2,EJ,{par_val}GHz]")
-        elif comp == 'C':
-            branch_lines.append(f"- [C,  1,2,EC,{par_val}GHz]")
-        elif comp == 'L':
-            branch_lines.append(f"- [L,  1,2,EL,{par_val}GHz]")
-    yaml_descr = "branches:\n" + "\n".join(branch_lines)
-    print(yaml_descr)
-    print("end yaml")
-    return scq.Circuit(yaml_descr, from_file=False)
+    if EJ != 0:
+        if EC != 0:                          # JJ with explicit EJC
+            branch_lines.append(
+                f'- ["JJ", {i},{j},EJ={EJ}GHz,EJC={EC}GHz]'
+            )
+        else:                                # JJ with default EJC
+            EJC = 100                        # internal capacitance (GHz)
+            branch_lines.append(
+                f'- ["JJ", {i},{j},EJ={EJ}GHz,EJC={EJC}GHz]'
+            )
+    elif EC != 0:                            # standalone capacitor
+        branch_lines.append(f'- ["C", {i},{j},EC={EC}GHz]')
 
-def graph_from_topology(topology: str, params: dict,
-                        targets: tuple[float,float]) -> Data:
+    if EL != 0:                              # (possibly in parallel) inductor
+        branch_lines.append(f'- ["L", {i},{j},EL={EL}GHz]')
+    return branch_lines
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ----------------------------- helpers ---------------------------------------
+def rand_val(label):          # uniform sampling inside the specified range
+    lo, hi = COMP_RANGES[label]
+    return random.uniform(lo, hi)
+
+def build_sc_circuit(topology: str, params: dict) -> scq.Circuit:
     """
-    Returns PyG Data object:
-      node feature dim = 5  (3-way one-hot + 2 values) for element nodes,
-                           5 zeros for each of the two circuit nodes.
-                           For C, L components, the second value is 0.
+    topology string e.g. 'JL', params names like 'J0', 'L1', ...
+    Uses get_yaml_for_one_circuit_edge(1,2, ...)
     """
-    # Node-ordering: [cir_node0, cir_node1, elem0, elem1, ...]
-    num_circuit_nodes = 2
-    elem_features = []
-    for i, c in enumerate(topology):
-        one_hot_vec = ONE_HOT[c]
-        par_val = params[f'{c}{i}']
-        if c == 'J':
-            ej, ecj = par_val
-            elem_features.append(one_hot_vec + [ej, ecj])
-        else:
-            elem_features.append(one_hot_vec + [par_val, 0.0])
+    yaml_lines = []
+    for idx, kind in enumerate(topology):
+        if kind == 'J':
+            yaml_lines += get_yaml_for_one_circuit_edge(
+                1, 2, EJ=params[f'J{idx}'] )
+        elif kind == 'C':
+            yaml_lines += get_yaml_for_one_circuit_edge(
+                1, 2, EC=params[f'C{idx}'] )
+        elif kind == 'L':
+            yaml_lines += get_yaml_for_one_circuit_edge(
+                1, 2, EL=params[f'L{idx}'] )
+    circ_yaml = "branches:\n" + "\n".join(yaml_lines)
+    return scq.Circuit(circ_yaml, from_file=False)
 
-    circuit_features = [[0,0,0,0,0] for _ in range(num_circuit_nodes)]
-    x = torch.tensor(circuit_features + elem_features, dtype=torch.float)
+def pyg_graph(topology: str, params: dict, w01: float, w12: float) -> Data:
+    n_circ = 2
+    elem_feats = [ONE_HOT[k] + [params[f'{k}{i}']]
+                  for i, k in enumerate(topology)]
+    x = torch.tensor([[0,0,0,0]]*n_circ + elem_feats, dtype=torch.float)
 
-    # Edges: element_i ↔ circuit_0 and element_i ↔ circuit_1
-    edge_index = []
+    edges = []
     for i in range(len(topology)):
-        elem_idx = num_circuit_nodes + i
-        for cir in (0, 1):
-            edge_index += [[elem_idx, cir], [cir, elem_idx]]
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+        e_idx = n_circ + i
+        for c in (0, 1):
+            edges += [[e_idx, c], [c, e_idx]]
+    edge_index = torch.tensor(edges, dtype=torch.long).t()
 
-    y = torch.tensor(targets, dtype=torch.float)  # (ω01, ω12)
-
+    y = torch.tensor([[math.log(w01), math.log(w12)]], dtype=torch.float)
     return Data(x=x, edge_index=edge_index, y=y)
 
-# ---------------------------------------------------------------------------- #
-def make_one_sample(topology: str):
-    """Worker function for pool.map"""
-    # (1) sample parameters
-    params = {}
-    for idx, element in enumerate(topology):
-        params[f'{element}{idx}'] = sample_component(element)
-    # (2) spectrum
-    circ = build_scqubits_circuit(topology, params)
-    evals = circ.eigenvals()
-    evals -= evals[0]
+def make_sample(topology: str) -> Data:
+    p = {f'{k}{i}': rand_val(f'E{k}') for i, k in enumerate(topology)}
+    circ = build_sc_circuit(topology, p)
+    evals = circ.eigenvals();  evals -= evals[0]
     w01, w12 = float(evals[1]), float(evals[2]-evals[1])
-    # (3) graph object
-    data = graph_from_topology(topology, params, (w01, w12))
-    return data
-
-def generate_dataset():
-    topo_list = ['J', 'C', 'L', 'JC', 'JL', 'CL', 'JCL']
-    chunks = []
-    for topo in topo_list:
-        for _ in range(NUM_SAMPLES_PER_TOPOLOGY):
-            print(f"Generating {topo}...")
-            chunks += make_one_sample([topo])
-            print(f"Done {topo}...")
-    return chunks
-
-# ---------------------------------------------------------------------------- #
-class CircuitDataset(InMemoryDataset):
-    def __init__(self, root, transform=None, pre_transform=None):
-        super().__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
-
-    @property
-    def raw_file_names(self):
-        return []
-
-    @property
-    def processed_file_names(self):   # one file is enough
-        return ['circuit_graphs.pt']
+    return pyg_graph(topology, p, w01, w12)
     
-    def download(self):               # nothing to download
-        pass
+# --------------------------- dataset class -----------------------------------
+class CircuitDataset(InMemoryDataset):
+    topologies = ['J', 'C', 'L', 'JC', 'JL', 'CL', 'JCL']
+
+    def __init__(self, root, num_samples):
+        self.num_samples = num_samples
+        super().__init__(root)
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
+    
+    @property
+    def raw_file_names(self): return []
+    @property
+    def processed_file_names(self): 
+        # Filename is now dynamic based on num_samples
+        return [f'circuit_graphs_n{self.num_samples}_v8.pt']
+    
+    def download(self): pass
 
     def process(self):
-        data_list = generate_dataset()
+        # Use a unique temporary directory for each processing run to avoid conflicts
+        tmp_dir = self.root / f"tmp_{uuid4()}"
+
+        if tmp_dir.exists(): # Should not happen with uuid, but good practice
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(exist_ok=True)
+
+        N_WORKERS = 6
+        BATCH_SIZE = 1000
+        wanted_topologies = [t for t in self.topologies if "J" in t]
+        
+        chunk_count = 0
+        with mp.Pool(N_WORKERS) as pool:
+            for topo in wanted_topologies:
+                print(f"Generating {self.num_samples} samples for topology: {topo}")
+                buffer = []
+                
+                tasks = [topo] * self.num_samples
+                
+                for sample in tqdm(pool.imap_unordered(make_sample, tasks), total=len(tasks)):
+                    buffer.append(sample)
+                    if len(buffer) == BATCH_SIZE:
+                        chunk_path = tmp_dir / f"chunk_{chunk_count}.pt"
+                        write_chunk(buffer, chunk_path)
+                        buffer.clear()
+                        chunk_count += 1
+                
+                if buffer: # Write any remaining samples
+                    chunk_path = tmp_dir / f"chunk_{chunk_count}.pt"
+                    write_chunk(buffer, chunk_path)
+                    chunk_count += 1
+
+        print("Collating sample chunks...")
+        data_list = []
+        for chunk_file in tqdm(list(tmp_dir.glob("*.pt"))):
+            # Each chunk file is now just a list of Data objects
+            data_chunk = torch.load(chunk_file, weights_only=False)
+            data_list.extend(data_chunk)
+        
+        shutil.rmtree(tmp_dir)
+
+        print(f"Total samples generated: {len(data_list)}")
         data, slices = self.collate(data_list)
         torch.save((data, slices), self.processed_paths[0])
 
-# ---------------------------------------------------------------------------- #
+# --------------------------- run once ----------------------------------------
 if __name__ == "__main__":
-    out_dir = pathlib.Path("./gnn_circuit_data")
-    ds = CircuitDataset(root=out_dir)
-    print(ds)
-    print("Example graph:", ds[0])
+    parser = argparse.ArgumentParser(description='Generate circuit graph dataset.')
+    parser.add_argument('--num_samples', type=int, default=10000,
+                        help='Number of samples to generate per topology.')
+    args = parser.parse_args()
+
+    random.seed(RNG_SEED); np.random.seed(RNG_SEED); torch.manual_seed(RNG_SEED)
+    
+    ds_root = pathlib.Path("gnn_circuit_data")
+    # We pass the num_samples to the constructor now
+    ds = CircuitDataset(root=ds_root, num_samples=args.num_samples)
+    print(ds, "\nExample:", ds[0])

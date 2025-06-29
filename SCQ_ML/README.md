@@ -2,6 +2,12 @@
 README.md, the decription of the whole project
 -->
 
+I decide to to proceed to the GNN model building now. To accomplish automated qubit discovery, we have two phases: ## 1. How to automatically evaluate the performance of a complex superconducting qubit? (There's no easy way of determining whether a qubit is good or bad, it depends on what levels to use as computational states, what is the gate protocol, gate time, measurement time, what is the gate error rate, is the error biased or support erasure conversion? Biased error is easy to correct, erasure conversion makes the effective error rates one magitude lower. We want there to be an automated way of proposing ways to utilize a superconducting circuit as a qubit, so the GCPN agent in phase 2's outputs can be evaluated.) ## 2. Train a GCPN using the "circuit user trained in phase 1 as the environment", and let the GCPN propose good superconducting qubits and test them in fab with the gate protocols proposed by the first agent in phase 1. 
+
+For the first phase, I want to divide it into two parts: ### a. We should create a dataset and a benchmark system, and let other people create RL policies to output good gate protocols that achieve good scores on a wide range of superconducting circuits.
+### b. We use the best policy to perform high-throughput in silico qubit screening in phase 2.
+
+Does it make sense? How do people provide benchmarks? How do people host the datasets?
 
 The purpose is to use ML to understand and predict properties of complex superconducting circuits, with the hope that the resulting ML model can help discover more performant superconducting qubits or more interesting superconducting qubits. Some interesting properties are: 
 1. Selection rule as in natrual qubits. Fluxonium has some pseudo-selection rule that originates from its wavefunction overlaps. It would be interesting to see if there are superconducting qubits that exhibit natural-atom like selection rules that enable optical pumping and other interesting protocols.
@@ -10,7 +16,9 @@ The purpose is to use ML to understand and predict properties of complex superco
 
 # Two facets of the holy grail:
 ## 1. How to automatically evaluate the performance of a complex superconducting qubit?
-## 2. How to generate good superconducting qubits?
+### a. We should create a dataset and a benchmark, and let other people create RL policies that achieve good scores on random qubits.
+### b. We use the best policy to perform high-throughput in silico qubit screening.
+## 2. Use GCPN to generate good superconducting qubits and test them in fab
 
 # Literature review
 ### Graph Neural Networks-based Parameter Design towards Large-Scale Superconducting Quantum Circuits for Crosstalk Mitigation (Nov 2024) 
@@ -80,7 +88,13 @@ It's about physical realization of qubits, like length of inductance, so not rel
    '''
    ```
 
-
+# Developmentsin GNN after spring 2021
+1. Graph Transformers like Graphormer with spatial encoding
+2. Higher-order GNNs like k-GNN and spectral methods
+3. Physics-informed models like HOPF nets for graphs with physics
+4. Diffusion-based graph generation (e.g., Graph Diffuser, Diffusion-based modeling)
+5. Enhanced GNN training with methods like GraphMAE and masking
+6. 
 
 # Specific NN architecture choice
 ### Graph Transformer

@@ -6,7 +6,7 @@ from make_dataset import CircuitDataset
 import pandas as pd
 import os
 import argparse
-
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.nn import TransformerConv, global_mean_pool, GlobalAttention
 from torch_geometric.nn.aggr import AttentionalAggregation
 import torch.nn.functional as F
@@ -99,9 +99,47 @@ print(f"x: {sample.x.shape}")
 print(f"edge_index: {sample.edge_index.shape}")
 print(f"y: {sample.y.shape}")
 
+# --- hyper-parameters ---
+MAX_EPOCHS    = 1000
+BATCH_SIZE    = 32
+LR            = 1e-4
+WEIGHT_DECAY  = 1e-4
+
+# --- setup dirs, device ---
+os.makedirs('weights', exist_ok=True)
+os.makedirs('logs', exist_ok=True)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print("Using device:", device)
+
+# --- load data ---
+dataset  = CircuitDataset(args.dataset_path, num_samples=args.num_samples)
+train_size = int(0.8 * len(dataset))
+test_size  = len(dataset) - train_size
+train_ds, test_ds = torch.utils.data.random_split(dataset, [train_size, test_size])
+loader_tr = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+loader_te = DataLoader(test_ds,  batch_size=BATCH_SIZE)
+
+print(f"Training on {len(train_ds)} samples, testing on {len(test_ds)} samples")
+
+
+
+
+
+# --- model, optimizer, scheduler ---
+model     = DeepGraphTransformer().to(device)
+# compute your true mean in log-space
+all_y = torch.cat([d.y for d in dataset], dim=0)  # shape: [N, 2]
+mean_log_omega = all_y.mean(0).to(device)          # shape: [2]
+model.mlp_out[-1].bias.data.copy_(mean_log_omega)
+print("Initialized final bias to:", model.mlp_out[-1].bias.data)
+
+opt       = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+scheduler = ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=10)
+
+# --- evaluation fn ---
 def evaluate(loader):
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
@@ -109,16 +147,19 @@ def evaluate(loader):
             total_loss += F.mse_loss(pred, data.y, reduction='sum').item()
     return total_loss / len(loader.dataset)
 
-model = DeepGraphTransformer().to(device)
-opt = torch.optim.AdamW(model.parameters())
+# --- untrained baseline ---
+baseline = evaluate(loader_te)
+print(f"Untrained model test MSE (log-space): {baseline:.4e}")
 
-print(f"Training on {len(train)} samples, testing on {len(test)} samples")
+# --- training loop ---
+best_test = float('inf')
+log_data  = []
 
-log_data = []
 try:
-    for epoch in range(200):
+    for epoch in range(1, MAX_EPOCHS+1):
         model.train()
-        loss_ema = 0
+        loss_ema = 0.0
+
         for data in loader_tr:
             data = data.to(device)
             opt.zero_grad()
@@ -126,20 +167,35 @@ try:
             loss = F.mse_loss(pred, data.y)
             loss.backward()
             opt.step()
-            loss_ema = 0.9*loss_ema + 0.1*loss.item() if loss_ema > 0 else loss.item()
-        
+            # exponential moving average for logging
+            loss_ema = 0.9*loss_ema + 0.1*loss.item() if loss_ema else loss.item()
+
+        # evaluate
         test_loss = evaluate(loader_te)
-        print(f"epoch {epoch:3d}  train-MSE {loss_ema:.4e}  test-MSE {test_loss:.4e}")
-        
-        # Save model weights
-        torch.save(model.state_dict(), f'weights/model_epoch_{epoch}_graphformer.pt')
-        
-        # Log data
-        log_data.append({'epoch': epoch, 'train_loss': loss_ema, 'test_loss': test_loss})
+        print(f"epoch {epoch:4d}  train-MSE {loss_ema:.4e}  test-MSE {test_loss:.4e}")
+
+        # scheduler step
+        scheduler.step(test_loss)
+
+        # best-checkpoint
+        if test_loss < best_test:
+            best_test = test_loss
+            ckpt_path = f'weights/best_graphformer.pt'
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  ↪️  New best model saved (test-MSE {best_test:.4e})")
+
+        # log
+        log_data.append({
+            'epoch': epoch,
+            'train_loss': loss_ema,
+            'test_loss':  test_loss,
+            'lr':          opt.param_groups[0]['lr']
+        })
+
 finally:
     if log_data:
-        df_log = pd.DataFrame(log_data)
-        df_log.to_csv('logs/training_log_graphformer.csv', index=False)
-        print("\nPartial or complete logs saved to logs/training_log_graphformer.csv")
+        df = pd.DataFrame(log_data)
+        df.to_csv('logs/training_log_graphformer.csv', index=False)
+        print(f"\nLogs saved to logs/training_log_graphformer.csv")
 
-print("Script finished.")
+print("Training complete. Best test-MSE (log-space):", best_test)
